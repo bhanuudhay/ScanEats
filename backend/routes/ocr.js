@@ -1,23 +1,20 @@
 import express from "express";
 import Tesseract from "tesseract.js";
 import fileUpload from "express-fileupload";
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
-import mongoose from "mongoose"; // Ensure we validate ObjectId
-import User from "../models/User.js"; // Import user model
+import mongoose from "mongoose";
+import User from "../models/User.js";
+import FoodEntry from "../models/FoodEntry.js";
 
 const router = express.Router();
-
-// Middleware for file upload
 router.use(fileUpload());
 
 // Ensure 'uploads' directory exists
 const uploadDir = "./uploads";
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir);
-}
+fs.mkdir(uploadDir, { recursive: true }).catch(console.error);
 
-// Function to extract nutrition data
+// Extract nutrition data from OCR text
 const extractNutritionData = (text) => {
   const nutrition = {};
   const regexPatterns = {
@@ -38,21 +35,21 @@ const extractNutritionData = (text) => {
   return nutrition;
 };
 
-// Function to calculate BMR (Basal Metabolic Rate)
+// Calculate BMR (Basal Metabolic Rate)
 const calculateBMR = (weight, height, age, gender) => {
-  if (!weight || !height || !age || !gender) return 2000; // Default
+  if (!weight || !height || !age || !gender) return 2000;
 
   return gender === "male"
     ? 88.36 + 13.4 * weight + 4.8 * height - 5.7 * age
     : 447.6 + 9.2 * weight + 3.1 * height - 4.3 * age;
 };
 
-// Function to calculate calories to burn & steps needed
+// Calculate calories to burn & steps needed
 const calculateBurn = (calories, user) => {
   if (!calories || !user) return { caloriesToBurn: 0, stepsNeeded: 0 };
 
   const bmr = calculateBMR(user.weight, user.height, user.age, user.gender);
-  const dailyCaloricNeed = bmr * 1.2; // Sedentary lifestyle assumption
+  const dailyCaloricNeed = bmr * 1.2; // Assuming a sedentary lifestyle
 
   const caloriesToBurn = Math.max(0, calories - dailyCaloricNeed * 0.1);
   const stepsNeeded = Math.round(caloriesToBurn / 0.04);
@@ -60,34 +57,31 @@ const calculateBurn = (calories, user) => {
   return { caloriesToBurn, stepsNeeded };
 };
 
-// OCR Route - Process Nutrition Label & Calculate Burn
+// OCR Route - Process Nutrition Label & Store Data
 router.post("/:userId", async (req, res) => {
+  let imagePath = null;
+
   try {
     if (!req.files || !req.files.image) {
       return res.status(400).json({ message: "No image uploaded" });
     }
 
     const { userId } = req.params;
-
-    // Validate MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ message: "Invalid user ID format" });
     }
 
-    // Fetch user data from database
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
     const imageFile = req.files.image;
-    const imagePath = path.join(uploadDir, `${Date.now()}_${imageFile.name}`);
+    imagePath = path.join(uploadDir, `${Date.now()}_${imageFile.name}`);
 
-    console.log(`🔄 Uploading Image: ${imagePath}`);
-
-    // Move file to server
+    console.log(`📸 Uploading Image: ${imagePath}`);
     await imageFile.mv(imagePath);
-    console.log(`✅ Image saved at: ${imagePath}`);
+    console.log(`✅ Image saved successfully.`);
 
     // Perform OCR
     const { data } = await Tesseract.recognize(imagePath, "eng", {
@@ -99,15 +93,33 @@ router.post("/:userId", async (req, res) => {
 
     // Extract nutrition data
     const nutritionData = extractNutritionData(data.text);
+    const { calories, fat, protein, carbs, sugar, fiber, sodium } = nutritionData;
+
+    // Validate extracted data
+    if (!calories) {
+      return res.status(400).json({ message: "No valid calorie data found in image" });
+    }
 
     // Calculate Calories to Burn & Steps Needed
-    const { caloriesToBurn, stepsNeeded } = calculateBurn(nutritionData.calories, user);
+    const { caloriesToBurn, stepsNeeded } = calculateBurn(calories, user);
 
-    // Cleanup - Remove the uploaded file after processing
-    fs.unlink(imagePath, (err) => {
-      if (err) console.error("⚠️ Error deleting file:", err);
-      else console.log(`🗑️ Deleted file: ${imagePath}`);
+    // Store data in MongoDB
+    const newFoodEntry = new FoodEntry({
+      userId,
+      foodName: "Scanned Food",
+      calories,
+      fat,
+      protein,
+      carbs,
+      sugar,
+      fiber,
+      sodium,
+      caloriesToBurn,
+      stepsNeeded,
     });
+
+    await newFoodEntry.save();
+    console.log(`✅ Food entry saved: ${newFoodEntry._id}`);
 
     res.json({
       success: true,
@@ -121,6 +133,13 @@ router.post("/:userId", async (req, res) => {
   } catch (error) {
     console.error("❌ OCR Error:", error);
     res.status(500).json({ message: "Error processing OCR", error: error.message });
+  } finally {
+    // Cleanup - Remove uploaded file
+    if (imagePath) {
+      fs.unlink(imagePath)
+        .then(() => console.log(`🗑️ Deleted file: ${imagePath}`))
+        .catch((err) => console.error("⚠️ Error deleting file:", err));
+    }
   }
 });
 
