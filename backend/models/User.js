@@ -1,5 +1,4 @@
 import mongoose from "mongoose";
-import bcrypt from "bcryptjs"; // Use bcryptjs for better compatibility
 
 // Define the schema
 const userSchema = new mongoose.Schema(
@@ -49,24 +48,24 @@ const userSchema = new mongoose.Schema(
   { timestamps: true } // Adds `createdAt` and `updatedAt` fields automatically
 );
 
-// 🔒 Hash password before saving user to DB
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next(); // Skip if password is not modified
+// Remove the pre-save hook for password hashing
+// userSchema.pre("save", async function (next) {
+//   if (!this.isModified("password")) return next();
+//
+//   try {
+//     const salt = await bcrypt.genSalt(10);
+//     this.password = await bcrypt.hash(this.password, salt);
+//     next();
+//   } catch (error) {
+//     console.error("Password hashing error:", error);
+//     next(error);
+//   }
+// });
 
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    console.error("Password hashing error:", error);
-    next(error);
-  }
-});
-
-// 🔑 Compare password for login
-userSchema.methods.comparePassword = async function (candidatePassword) {
-  return bcrypt.compare(candidatePassword, this.password);
-};
+// Remove the comparePassword method
+// userSchema.methods.comparePassword = async function (candidatePassword) {
+//   return bcrypt.compare(candidatePassword, this.password);
+// };
 
 // ✨ Hide sensitive data when returning user object
 userSchema.methods.toJSON = function () {
