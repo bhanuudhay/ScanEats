@@ -19,7 +19,7 @@ const CameraCapture = ({ userId }) => {
     try {
       // Stop existing stream if active
       if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+        stopCamera();
       }
 
       const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -34,33 +34,38 @@ const CameraCapture = ({ userId }) => {
   };
 
   // 🔴 Stop Camera when component unmounts
+  const stopCamera = () => {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+  };
+
   useEffect(() => {
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      stopCamera();
       if (imageURL) {
         URL.revokeObjectURL(imageURL); // Clean up image URL
       }
     };
-  }, [stream, imageURL]);
+  }, [imageURL]);
 
   // 📸 Capture Image from Video
   const captureImage = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
     const canvas = canvasRef.current;
     const video = videoRef.current;
-    if (canvas && video) {
-      const context = canvas.getContext("2d");
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const context = canvas.getContext("2d");
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Convert canvas to Blob and save as File
-      canvas.toBlob(blob => {
-        const file = new File([blob], "captured.png", { type: "image/png" });
-        setImage(file);
-        const url = URL.createObjectURL(file);
-        setImageURL(url); // Store image URL for preview
-      }, "image/png");
-    }
+    // Convert canvas to Blob and save as File
+    canvas.toBlob(blob => {
+      const file = new File([blob], "captured.png", { type: "image/png" });
+      setImage(file);
+      const url = URL.createObjectURL(file);
+      setImageURL(url); // Store image URL for preview
+    }, "image/png");
   };
 
   // 📤 Send Image to Backend for OCR Processing
