@@ -1,87 +1,103 @@
 import express from "express";
 import Tesseract from "tesseract.js";
-import fileUpload from "express-fileupload";
+import multer from "multer";
 import fs from "fs/promises";
-import path from "path";
+import * as Jimp from "jimp"; // ✅ Correct way to import Jimp in ES modules
+ // Added for image preprocessing
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import FoodEntry from "../models/FoodEntry.js";
 
 const router = express.Router();
-router.use(fileUpload());
+
+// Multer setup for file uploads
+const uploadDir = "./uploads";
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => cb(null, `${Date.now()}_${file.originalname}`),
+});
+const upload = multer({ storage });
 
 // Ensure 'uploads' directory exists
-const uploadDir = "./uploads";
 fs.mkdir(uploadDir, { recursive: true }).catch(console.error);
 
-// Extract nutrition data from OCR text
+// Preprocessing Function (Enhances OCR Performance)
+const preprocessImage = async (imagePath) => {
+  try {
+    let image = await Jimp.read(imagePath);
+    await image
+      .resize(800, Jimp.AUTO) // Resize for better OCR readability
+      .greyscale() // Convert to grayscale
+      .contrast(0.5) // Increase contrast
+      .normalize() // Normalize lighting
+      .writeAsync(imagePath); // Save the changes
+
+    console.log("✅ Image preprocessed successfully");
+  } catch (error) {
+    console.error("⚠️ Error in image preprocessing:", error);
+  }
+};
+
 const extractNutritionData = (text) => {
   const nutrition = {};
   const regexPatterns = {
-    calories: /calories[\s:]*([\d]+)/i,
-    fat: /total fat[\s:]*([\d.]+)\s*g/i,
-    protein: /protein[\s:]*([\d.]+)\s*g/i,
-    carbs: /total\s*carbohydrates?[\s:]*([\d.]+)\s*g/i,
-    sugar: /total\s*sugars?[\s:]*([\d.]+)\s*g/i,
-    fiber: /fiber[\s:]*([\d.]+)\s*g/i,
-    sodium: /sodium[\s:]*([\d]+)\s*mg/i,
+    calories: /calories[^0-9]*([\d]+)/i,  
+    fat: /total\s*fat[^0-9]*([\d.]+)\s*g/i,
+    protein: /protein[^0-9]*([\d.]+)\s*g/i,
+    carbs: /total\s*carbohydrate[^0-9]*([\d.]+)\s*g/i,
+    sugar: /sugars?[^0-9]*([\d.]+)\s*g/i,
+    fiber: /fiber[^0-9]*([\d.]+)\s*g/i,
+    sodium: /sodium[^0-9]*([\d.]+)\s*mg/i,
+    servingSize: /serv(?:ing)?\s*size[^0-9]*([\d.]+)\s*(g|ml|oz|cup|tbsp|tsp)/i,
   };
 
   for (const [key, regex] of Object.entries(regexPatterns)) {
-    const match = text.match(regex);
-    nutrition[key] = match ? parseFloat(match[1]) : null;
+    try {
+      const match = text.match(regex);
+      if (match) {
+        nutrition[key] = parseFloat(match[1]); // Extract only numeric values
+      } else {
+        nutrition[key] = 0; // Default to 0 if not found
+      }
+    } catch (err) {
+      nutrition[key] = 0;
+    }
   }
 
+  console.log("✅ Extracted Nutrition Data (Ignoring %):", nutrition);
   return nutrition;
 };
 
-// Calculate BMR (Basal Metabolic Rate)
-const calculateBMR = (weight, height, age, gender) => {
-  if (!weight || !height || !age || !gender) return 2000;
-
-  return gender === "male"
-    ? 88.36 + 13.4 * weight + 4.8 * height - 5.7 * age
-    : 447.6 + 9.2 * weight + 3.1 * height - 4.3 * age;
-};
-
-// Calculate calories to burn & steps needed
-const calculateBurn = (calories, user) => {
-  if (!calories || !user) return { caloriesToBurn: 0, stepsNeeded: 0 };
-
-  const bmr = calculateBMR(user.weight, user.height, user.age, user.gender);
-  const dailyCaloricNeed = bmr * 1.2; // Assuming a sedentary lifestyle
-
-  const caloriesToBurn = Math.max(0, calories - dailyCaloricNeed * 0.1);
-  const stepsNeeded = Math.round(caloriesToBurn / 0.04);
-
-  return { caloriesToBurn, stepsNeeded };
-};
 
 // OCR Route - Process Nutrition Label & Store Data
-router.post("/:userId", async (req, res) => {
+router.post("/:userId", upload.single("image"), async (req, res) => {
   let imagePath = null;
 
   try {
-    if (!req.files || !req.files.image) {
+    console.log("📸 Received OCR request");
+
+    if (!req.file) {
+      console.error("❌ No image uploaded!");
       return res.status(400).json({ message: "No image uploaded" });
     }
 
     const { userId } = req.params;
     if (!mongoose.Types.ObjectId.isValid(userId)) {
+      console.error("❌ Invalid user ID format");
       return res.status(400).json({ message: "Invalid user ID format" });
     }
 
     const user = await User.findById(userId);
     if (!user) {
+      console.error("❌ User not found");
       return res.status(404).json({ message: "User not found" });
     }
 
-    const imageFile = req.files.image;
-    imagePath = path.join(uploadDir, `${Date.now()}_${imageFile.name}`);
+    imagePath = req.file.path;
+    console.log(`✅ Image saved: ${imagePath}`);
 
-    console.log(`📸 Uploading Image: ${imagePath}`);
-    await imageFile.mv(imagePath);
-    console.log(`✅ Image saved successfully.`);
+    // Preprocess the image before OCR
+    await preprocessImage(imagePath);
 
     // Perform OCR
     const { data } = await Tesseract.recognize(imagePath, "eng", {
@@ -93,27 +109,22 @@ router.post("/:userId", async (req, res) => {
 
     // Extract nutrition data
     const nutritionData = extractNutritionData(data.text);
-    const { calories, fat, protein, carbs, sugar, fiber, sodium } = nutritionData;
-
-    // Validate extracted data
-    if (!calories) {
-      return res.status(400).json({ message: "No valid calorie data found in image" });
-    }
 
     // Calculate Calories to Burn & Steps Needed
-    const { caloriesToBurn, stepsNeeded } = calculateBurn(calories, user);
+    const { caloriesToBurn, stepsNeeded } = calculateBurn(nutritionData.calories, user);
 
     // Store data in MongoDB
     const newFoodEntry = new FoodEntry({
       userId,
       foodName: "Scanned Food",
-      calories,
-      fat,
-      protein,
-      carbs,
-      sugar,
-      fiber,
-      sodium,
+      calories: nutritionData.calories,
+      fat: nutritionData.fat,
+      protein: nutritionData.protein,
+      carbs: nutritionData.carbs,
+      sugar: nutritionData.sugar,
+      fiber: nutritionData.fiber,
+      sodium: nutritionData.sodium,
+      servingSize: nutritionData.servingSize,
       caloriesToBurn,
       stepsNeeded,
     });
@@ -136,11 +147,41 @@ router.post("/:userId", async (req, res) => {
   } finally {
     // Cleanup - Remove uploaded file
     if (imagePath) {
-      fs.unlink(imagePath)
-        .then(() => console.log(`🗑️ Deleted file: ${imagePath}`))
-        .catch((err) => console.error("⚠️ Error deleting file:", err));
+      try {
+        await fs.unlink(imagePath);
+        console.log(`🗑️ Deleted file: ${imagePath}`);
+      } catch (err) {
+        console.error("⚠️ Error deleting file:", err);
+      }
     }
   }
 });
+
+// Calculate BMR
+const calculateBMR = (weight, height, age, gender) => {
+  if (!weight || !height || !age || !gender) {
+    return 2000;
+  }
+  return gender === "male"
+    ? 88.36 + 13.4 * weight + 4.8 * height - 5.7 * age
+    : 447.6 + 9.2 * weight + 3.1 * height - 4.3 * age;
+};
+
+// Calculate calories to burn & steps needed
+const calculateBurn = (calories, user) => {
+  if (!calories || !user) return { caloriesToBurn: 0, stepsNeeded: 0 };
+
+  const bmr = calculateBMR(user.weight, user.height, user.age, user.gender);
+  const dailyCaloricNeed = bmr * 1.2; // Assuming a sedentary lifestyle
+
+  // ✅ New Formula: Only subtract calories already burned by BMR
+  const caloriesToBurn = Math.max(0, calories - (dailyCaloricNeed / 24)); 
+
+  // ✅ Steps calculation based on standard 0.04 kcal per step (varies by weight)
+  const stepsNeeded = Math.round(caloriesToBurn / 0.04);
+
+  return { caloriesToBurn, stepsNeeded };
+};
+
 
 export default router;

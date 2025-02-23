@@ -5,7 +5,7 @@ const CameraCapture = ({ userId }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [image, setImage] = useState(null);
-  const [imageURL, setImageURL] = useState(null); // Store image URL for preview
+  const [imageURL, setImageURL] = useState(null);
   const [ocrResult, setOcrResult] = useState("");
   const [nutritionData, setNutritionData] = useState(null);
   const [caloriesToBurn, setCaloriesToBurn] = useState(0);
@@ -17,10 +17,7 @@ const CameraCapture = ({ userId }) => {
   // 🎥 Start Camera
   const startCamera = async () => {
     try {
-      // Stop existing stream if active
-      if (stream) {
-        stopCamera();
-      }
+      stopCamera(); // Stop previous stream if active
 
       const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
       setStream(newStream);
@@ -33,10 +30,10 @@ const CameraCapture = ({ userId }) => {
     }
   };
 
-  // 🔴 Stop Camera when component unmounts
+  // 🔴 Stop Camera
   const stopCamera = () => {
     if (stream) {
-      stream.getTracks().forEach(track => track.stop());
+      stream.getTracks().forEach((track) => track.stop());
       setStream(null);
     }
   };
@@ -45,27 +42,42 @@ const CameraCapture = ({ userId }) => {
     return () => {
       stopCamera();
       if (imageURL) {
-        URL.revokeObjectURL(imageURL); // Clean up image URL
+        URL.revokeObjectURL(imageURL); // Cleanup captured image URL
       }
     };
   }, [imageURL]);
 
   // 📸 Capture Image from Video
   const captureImage = () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current) {
+      setError("Camera is not ready.");
+      return;
+    }
 
     const canvas = canvasRef.current;
     const video = videoRef.current;
     const context = canvas.getContext("2d");
+
+    // Set canvas size to match video dimensions
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Convert canvas to Blob and save as File
-    canvas.toBlob(blob => {
-      const file = new File([blob], "captured.png", { type: "image/png" });
-      setImage(file);
-      const url = URL.createObjectURL(file);
-      setImageURL(url); // Store image URL for preview
-    }, "image/png");
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          setError("Failed to capture image.");
+          return;
+        }
+        const file = new File([blob], `captured_${Date.now()}.png`, { type: "image/png" });
+        setImage(file);
+        const url = URL.createObjectURL(file);
+        setImageURL(url);
+      },
+      "image/png",
+      1
+    );
   };
 
   // 📤 Send Image to Backend for OCR Processing
@@ -84,10 +96,14 @@ const CameraCapture = ({ userId }) => {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setOcrResult(response.data.text);
-      setNutritionData(response.data.nutrition);
-      setCaloriesToBurn(response.data.caloriesToBurn);
-      setStepsNeeded(response.data.stepsNeeded);
+      if (response.data) {
+        setOcrResult(response.data.text || "No text detected");
+        setNutritionData(response.data.nutrition || {});
+        setCaloriesToBurn(response.data.caloriesToBurn || 0);
+        setStepsNeeded(response.data.stepsNeeded || 0);
+      } else {
+        throw new Error("Invalid response from server");
+      }
     } catch (error) {
       console.error("🛑 OCR Processing Error:", error);
       setError(error.response?.data?.message || "Error processing image. Please try again.");
@@ -102,7 +118,7 @@ const CameraCapture = ({ userId }) => {
 
       {/* 🎥 Video Stream */}
       <div style={styles.videoContainer}>
-        <video ref={videoRef} autoPlay style={styles.video}></video>
+        <video ref={videoRef} autoPlay muted style={styles.video}></video>
       </div>
 
       <button onClick={startCamera} style={styles.button} disabled={stream}>
@@ -111,9 +127,12 @@ const CameraCapture = ({ userId }) => {
       <button onClick={captureImage} style={styles.button} disabled={!stream}>
         Capture 📸
       </button>
+      <button onClick={stopCamera} style={styles.button} disabled={!stream}>
+        Stop Camera ⏹️
+      </button>
 
       {/* 🎯 Hidden Canvas for Capturing Image */}
-      <canvas ref={canvasRef} width="300" height="200" style={{ display: "none" }}></canvas>
+      <canvas ref={canvasRef} style={{ display: "none" }}></canvas>
 
       {/* 🖼️ Captured Image Preview */}
       {imageURL && (
@@ -139,7 +158,7 @@ const CameraCapture = ({ userId }) => {
       )}
 
       {/* 🥗 Nutrition Data */}
-      {nutritionData && (
+      {nutritionData && Object.keys(nutritionData).length > 0 && (
         <div style={styles.resultContainer}>
           <h3>Extracted Nutrition Data:</h3>
           <ul>
@@ -171,7 +190,16 @@ const styles = {
   container: { textAlign: "center", padding: "20px" },
   videoContainer: { display: "flex", justifyContent: "center", marginBottom: "10px" },
   video: { width: "100%", maxWidth: "320px", borderRadius: "10px", border: "2px solid #ddd" },
-  button: { margin: "5px", padding: "10px 15px", cursor: "pointer", borderRadius: "5px", border: "none", background: "#007BFF", color: "white", fontWeight: "bold" },
+  button: {
+    margin: "5px",
+    padding: "10px 15px",
+    cursor: "pointer",
+    borderRadius: "5px",
+    border: "none",
+    background: "#007BFF",
+    color: "white",
+    fontWeight: "bold",
+  },
   imagePreview: { margin: "15px 0" },
   resultContainer: { marginTop: "15px", padding: "10px", border: "1px solid #ccc", borderRadius: "10px", background: "#f9f9f9" },
   error: { color: "red", marginTop: "10px", fontWeight: "bold" },
